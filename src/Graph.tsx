@@ -14,7 +14,7 @@ interface IProps {
  * Perspective library adds load to HTMLElement prototype.
  * This interface acts as a wrapper for Typescript compiler.
  */
-interface PerspectiveViewerElement {
+interface PerspectiveViewerElement extends HTMLElement {
   load: (table: Table) => void,
 }
 
@@ -25,6 +25,7 @@ interface PerspectiveViewerElement {
 class Graph extends Component<IProps, {}> {
   // Perspective table
   table: Table | undefined;
+  lastTimestamp: Date | undefined;
 
   render() {
     return React.createElement('perspective-viewer');
@@ -44,28 +45,61 @@ class Graph extends Component<IProps, {}> {
     if (window.perspective && window.perspective.worker()) {
       this.table = window.perspective.worker().table(schema);
     }
+
     if (this.table) {
       // Load the `table` in the `<perspective-viewer>` DOM reference.
+      elem.load(this.table);
 
       // Add more Perspective configurations here.
-      elem.load(this.table);
+      elem.setAttribute('view', 'y_line'); // Set view to a line graph
+      elem.setAttribute('row-pivots', '["timestamp"]'); // Use timestamp as the x-axis
+      elem.setAttribute('columns', '["top_ask_price"]'); // Set top_ask_price as y-axis
+      elem.setAttribute('aggregates', JSON.stringify({
+        stock: 'distinct count',
+        top_ask_price: 'avg',
+        top_bid_price: 'avg',
+        timestamp: 'distinct count',
+      }));
     }
   }
 
   componentDidUpdate() {
-    // Everytime the data props is updated, insert the data into Perspective table
     if (this.table) {
-      // As part of the task, you need to fix the way we update the data props to
-      // avoid inserting duplicated entries into Perspective table again.
-      this.table.update(this.props.data.map((el: any) => {
-        // Format the data from ServerRespond to the schema
-        return {
-          stock: el.stock,
-          top_ask_price: el.top_ask && el.top_ask.price || 0,
-          top_bid_price: el.top_bid && el.top_bid.price || 0,
-          timestamp: el.timestamp,
-        };
+      // Filter out duplicate data based on timestamp
+      const newData = this.props.data.filter((el: ServerRespond) => {
+        const timestamp = new Date(el.timestamp);
+        if (!this.lastTimestamp || timestamp > this.lastTimestamp) {
+          this.lastTimestamp = timestamp;
+          return true;
+        }
+        return false;
+      });
+
+      // Convert data to the format expected by Perspective
+      const formattedData = newData.map((el: ServerRespond) => ({
+        stock: el.stock,
+        top_ask_price: el.top_ask && el.top_ask.price !== undefined ? el.top_ask.price : 0,
+        top_bid_price: el.top_bid && el.top_bid.price !== undefined ? el.top_bid.price : 0,
+        timestamp: new Date(el.timestamp),
       }));
+
+      // Create a new object where each key points to an array of values
+      const dataObject: Record<string, (string | number | boolean | Date)[]> = {
+        stock: [],
+        top_ask_price: [],
+        top_bid_price: [],
+        timestamp: [],
+      };
+
+      formattedData.forEach(row => {
+        Object.keys(dataObject).forEach(key => {
+          // Use type assertion to avoid TypeScript errors
+          dataObject[key].push(row[key as keyof typeof row] as any);
+        });
+      });
+
+      // Update the table with the new data
+      this.table.update(dataObject);
     }
   }
 }
